@@ -400,7 +400,7 @@ func (controller *Controller) GetNodeInitiators(ctx context.Context, nodeAddress
 	return initiators, err
 }
 
-func (controller *Controller) NotifyUnmap(ctx context.Context, nodeAddress string, volumeWWN string) error {
+func (controller *Controller) NotifyUnmap(ctx context.Context, nodeAddress string, volumeID string) error {
 	clientConnection := controller.nodeServiceClients[nodeAddress]
 	if clientConnection == nil {
 		klog.V(3).InfoS("node grpc client not found, establishing...", "nodeAddress", nodeAddress)
@@ -411,7 +411,7 @@ func (controller *Controller) NotifyUnmap(ctx context.Context, nodeAddress strin
 		}
 		controller.nodeServiceClients[nodeAddress] = clientConnection
 	}
-	return node_service.NotifyUnmap(ctx, clientConnection, volumeWWN)
+	return node_service.NotifyUnmap(ctx, clientConnection, volumeID)
 }
 
 // Graceful shutdown of Node-Controller RPC Clients

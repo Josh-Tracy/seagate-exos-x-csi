@@ -83,4 +83,12 @@ For an isolated baseline-driver probe expected to attach successfully, pass
 `--expected-code OK --unpublish-after-success`; the client then requires a
 successful cleanup NodeUnpublish before reporting success.
 Use `--timeout` for a baseline expected to enter the upstream per-portal wait;
-the default is 45 seconds.
+the default is 90 seconds. That default also leaves enough time for the
+candidate missing-connector stable-absence window during `--unpublish-only`.
+
+To exercise detach reconciliation against a preserved, independently verified
+unused map without issuing another publish, pass `--unpublish-only` and
+`--expected-code OK`. In that mode only `--volume-id` and `--target-path` are
+required. The target path should be a nonexistent disposable path unless the
+test intentionally owns an existing publication. Audit the exact WWID map and
+prove that it is unused before invoking this mode.

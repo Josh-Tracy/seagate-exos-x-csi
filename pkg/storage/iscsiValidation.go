@@ -201,6 +201,77 @@ func inspectISCSIMultipathIdentity(volumeWWN string) (string, error) {
 	return mapDevice, nil
 }
 
+// inspectISCSIMultipathDetachIdentity selects a map by its exact device-mapper
+// WWID and validates every remaining slave before detach. A path may report the
+// narrowly defined all-zero VPD sentinel after its array-side LUN mapping has
+// already been removed. That state is safe to accept only for detach: the map
+// UUID still proves which volume is being removed, and DetachStorage separately
+// verifies that the map is neither mounted nor open before disconnecting it.
+// Attach and expansion must continue to use inspectISCSIMultipathIdentity and
+// reject these inaccessible paths.
+func inspectISCSIMultipathDetachIdentity(volumeWWN string) (string, int, error) {
+	expectedWWID, err := canonicalMultipathWWID(volumeWWN)
+	if err != nil {
+		return "", 0, err
+	}
+	mapDevice, err := findMultipathMapByWWID(expectedWWID)
+	if err != nil {
+		return "", 0, err
+	}
+	slaves, err := os.ReadDir(filepath.Join("/sys/class/block", filepath.Base(mapDevice), "slaves"))
+	if err != nil {
+		return "", 0, fmt.Errorf("list slaves for %s: %w", mapDevice, err)
+	}
+
+	inaccessiblePaths := 0
+	for _, slave := range slaves {
+		pathDevice := filepath.Join("/dev", slave.Name())
+		pathWWID, readErr := readSCSIWWID(pathDevice)
+		if readErr != nil {
+			return "", 0, readErr
+		}
+		if err := validateDetachPathWWID(pathDevice, pathWWID, expectedWWID); err != nil {
+			return "", 0, err
+		}
+		if isUnavailableSCSIWWID(pathWWID) {
+			inaccessiblePaths++
+		}
+	}
+	return mapDevice, inaccessiblePaths, nil
+}
+
+func validateDetachPathWWID(device, pathWWID, expectedWWID string) error {
+	if pathWWID == expectedWWID || isUnavailableSCSIWWID(pathWWID) {
+		return nil
+	}
+	return fmt.Errorf("path %s reports WWID %s, expected %s or an unavailable all-zero sentinel",
+		device, pathWWID, expectedWWID)
+}
+
+func isUnavailableSCSIWWID(wwid string) bool {
+	wwid = strings.TrimSpace(wwid)
+	if allZeroes(wwid) {
+		return true
+	}
+	// scsi_id has been observed returning either an NAA type nibble (3) or
+	// an NAA type plus IEEE registered-extension nibble (36), followed only
+	// by zeroes, when the backing PowerVault mapping is no longer accessible.
+	return (strings.HasPrefix(wwid, "3") && allZeroes(wwid[1:])) ||
+		(strings.HasPrefix(wwid, "36") && allZeroes(wwid[2:]))
+}
+
+func allZeroes(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if character != '0' {
+			return false
+		}
+	}
+	return true
+}
+
 // validatePersistedSinglePath checks that a connector's non-multipath device
 // still exists and belongs to the requested volume. A missing device is
 // reported separately so NodeUnpublishVolume can preserve CSI idempotency and

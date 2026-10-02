@@ -18,7 +18,7 @@ import (
 
 func main() {
 	var endpoint, volumeID, targetPath, iqn, portals, lun, expectedCode string
-	var unpublishAfterSuccess bool
+	var unpublishAfterSuccess, unpublishOnly bool
 	var timeout time.Duration
 	flag.StringVar(&endpoint, "endpoint", "/csi/csi.sock", "node Unix socket")
 	flag.StringVar(&volumeID, "volume-id", "", "augmented CSI volume ID")
@@ -28,11 +28,18 @@ func main() {
 	flag.StringVar(&lun, "lun", "", "numeric LUN publish context")
 	flag.StringVar(&expectedCode, "expected-code", "FailedPrecondition", "expected gRPC status code")
 	flag.BoolVar(&unpublishAfterSuccess, "unpublish-after-success", false, "call NodeUnpublishVolume after an expected successful publish")
-	flag.DurationVar(&timeout, "timeout", 45*time.Second, "overall publish and optional cleanup timeout")
+	flag.BoolVar(&unpublishOnly, "unpublish-only", false, "call only NodeUnpublishVolume (iqn, portals, and lun are not required)")
+	flag.DurationVar(&timeout, "timeout", 90*time.Second, "overall publish and optional cleanup timeout")
 	flag.Parse()
 
-	if volumeID == "" || targetPath == "" || iqn == "" || portals == "" || lun == "" {
-		fatal(fmt.Errorf("--volume-id, --target-path, --iqn, --portals, and --lun are required"))
+	if volumeID == "" || targetPath == "" {
+		fatal(fmt.Errorf("--volume-id and --target-path are required"))
+	}
+	if !unpublishOnly && (iqn == "" || portals == "" || lun == "") {
+		fatal(fmt.Errorf("--iqn, --portals, and --lun are required unless --unpublish-only is set"))
+	}
+	if unpublishOnly && unpublishAfterSuccess {
+		fatal(fmt.Errorf("--unpublish-only and --unpublish-after-success are mutually exclusive"))
 	}
 	wantCode, ok := parseCode(expectedCode)
 	if !ok {
@@ -52,6 +59,19 @@ func main() {
 		fatal(fmt.Errorf("connect to %s: %w", endpoint, err))
 	}
 	defer connection.Close()
+	if unpublishOnly {
+		response, err := csi.NewNodeClient(connection).NodeUnpublishVolume(ctx, &csi.NodeUnpublishVolumeRequest{
+			VolumeId:   volumeID,
+			TargetPath: targetPath,
+		})
+		gotCode := status.Code(err)
+		if gotCode != wantCode {
+			fatal(fmt.Errorf("NodeUnpublishVolume returned code %s, want %s; response=%v error=%v",
+				gotCode, wantCode, response, err))
+		}
+		fmt.Printf("PASS: NodeUnpublishVolume returned expected code %s\n", gotCode)
+		return
+	}
 
 	response, err := csi.NewNodeClient(connection).NodePublishVolume(ctx, &csi.NodePublishVolumeRequest{
 		VolumeId:   volumeID,
