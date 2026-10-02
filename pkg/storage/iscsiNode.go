@@ -59,12 +59,21 @@ func (iscsi *iscsiStorage) NodeUnstageVolume(ctx context.Context, req *csi.NodeU
 }
 
 func (iscsi *iscsiStorage) AttachStorage(ctx context.Context, req *csi.NodePublishVolumeRequest) (string, error) {
-	wwn, _ := common.VolumeIdGetWwn(req.GetVolumeId())
+	wwn, err := common.VolumeIdGetWwn(req.GetVolumeId())
+	if err != nil {
+		return "", status.Error(codes.InvalidArgument, err.Error())
+	}
 	iqn := req.GetVolumeContext()["iqn"]
+	if strings.TrimSpace(iqn) == "" {
+		return "", status.Error(codes.InvalidArgument, "iSCSI target IQN is empty")
+	}
 	portals := strings.Split(req.GetVolumeContext()["portals"], ",")
 	klog.InfoS("iSCSI connection info:", "iqn", iqn, "portals", portals)
 
-	lun, _ := strconv.ParseInt(req.GetPublishContext()["lun"], 10, 32)
+	lun, err := strconv.ParseInt(req.GetPublishContext()["lun"], 10, 32)
+	if err != nil || lun < 0 {
+		return "", status.Errorf(codes.InvalidArgument, "invalid iSCSI LUN %q", req.GetPublishContext()["lun"])
+	}
 	klog.InfoS("LUN:", "lun", lun)
 
 	klog.InfoS("initiating ISCSI connection...")
@@ -85,6 +94,9 @@ func (iscsi *iscsiStorage) AttachStorage(ctx context.Context, req *csi.NodePubli
 				klog.V(4).InfoS("WARNING: device exists before iscsi login:", "devicePath", devicePath, "os.Stat error", err)
 			}
 		}
+	}
+	if len(targets) == 0 {
+		return "", status.Error(codes.InvalidArgument, "iSCSI portal list is empty")
 	}
 
 	// If CHAP secrets have been specified, include them in the iscsilib Connector
@@ -120,6 +132,10 @@ func (iscsi *iscsiStorage) AttachStorage(ctx context.Context, req *csi.NodePubli
 		SessionSecrets:   iscsiSecrets,
 		RetryCount:       20,
 	}
+	if err := prepareISCSIMultipathMap(iqn, int(lun), wwn); err != nil {
+		return "", status.Errorf(codes.FailedPrecondition,
+			"iSCSI pre-attach validation failed for WWN %s at LUN %d: %v", wwn, lun, err)
+	}
 
 	path, err := iscsilib.Connect(connector)
 	if err != nil {
@@ -152,6 +168,24 @@ func (iscsi *iscsiStorage) AttachStorage(ctx context.Context, req *csi.NodePubli
 			attempts++
 		}
 	}
+
+	inspection, err := inspectISCSIMultipathMap(wwn)
+	if err != nil {
+		return "", status.Errorf(codes.FailedPrecondition,
+			"iSCSI device validation failed for WWN %s: %v", wwn, err)
+	}
+	// Connect can discover a map by target and numeric LUN. Always replace its
+	// result with the map selected by the expected volume WWN after validating
+	// every live path and every capacity layer.
+	path = inspection.Device
+	connector.DevicePath = inspection.Device
+	connector.Multipath = true
+	klog.InfoS("validated iSCSI multipath device",
+		"device", inspection.Device,
+		"wwid", inspection.WWID,
+		"paths", len(inspection.SlaveNames),
+		"capacityBytes", inspection.Capacity)
+
 	if _, err := os.Stat(iscsi.connectorInfoPath); err == nil {
 		klog.InfoS("iscsi connection file already exists", "connectorInfoPath", iscsi.connectorInfoPath)
 	}
@@ -169,14 +203,75 @@ func (iscsi *iscsiStorage) AttachStorage(ctx context.Context, req *csi.NodePubli
 }
 
 func (iscsi *iscsiStorage) DetachStorage(ctx context.Context, req *csi.NodeUnpublishVolumeRequest) error {
+	wwn, err := common.VolumeIdGetWwn(req.GetVolumeId())
+	if err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	expectedWWID, err := canonicalMultipathWWID(wwn)
+	if err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
 	klog.Infof("loading ISCSI connection info from %s", iscsi.connectorInfoPath)
 	connector, err := iscsilib.GetConnectorFromFile(iscsi.connectorInfoPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			klog.InfoS("assuming that ISCSI connection is already closed")
+			mapDevice, inspectErr := inspectISCSIMultipathIdentity(wwn)
+			if inspectErr != nil {
+				if os.IsNotExist(inspectErr) {
+					paths, pathsErr := findSCSIPathsByWWID(expectedWWID)
+					if pathsErr != nil {
+						return status.Errorf(codes.Aborted, "cannot reconcile missing iSCSI connector state: %v", pathsErr)
+					}
+					if len(paths) == 0 {
+						klog.InfoS("missing iSCSI connector reconciled: no exact map or paths remain", "wwid", expectedWWID)
+						return nil
+					}
+					return status.Errorf(codes.Aborted,
+						"missing iSCSI connector state: no exact multipath map for WWID %s, but %d matching SCSI paths remain",
+						expectedWWID, len(paths))
+				}
+				return status.Errorf(codes.Aborted, "cannot safely reconcile missing iSCSI connector state: %v", inspectErr)
+			}
+			connector = &iscsilib.Connector{DevicePath: mapDevice, Multipath: true}
+			klog.InfoS("reconstructed missing iSCSI connector from live exact-WWID map",
+				"device", mapDevice, "wwid", expectedWWID)
+		} else {
+			return status.Error(codes.Internal, err.Error())
+		}
+	}
+
+	if connector.Multipath {
+		mapDevice, inspectErr := inspectISCSIMultipathIdentity(wwn)
+		if inspectErr != nil {
+			if os.IsNotExist(inspectErr) {
+				paths, pathsErr := findSCSIPathsByWWID(expectedWWID)
+				if pathsErr != nil {
+					return status.Errorf(codes.Aborted, "cannot validate persisted iSCSI connector state: %v", pathsErr)
+				}
+				if len(paths) == 0 {
+					if removeErr := os.Remove(iscsi.connectorInfoPath); removeErr != nil && !os.IsNotExist(removeErr) {
+						return status.Errorf(codes.Internal, "remove stale iSCSI connector: %v", removeErr)
+					}
+					klog.InfoS("persisted iSCSI connector reconciled: no exact map or paths remain", "wwid", expectedWWID)
+					return nil
+				}
+			}
+			return status.Errorf(codes.Aborted, "persisted iSCSI connector does not match safe live state: %v", inspectErr)
+		}
+		connector.DevicePath = mapDevice
+	} else {
+		alreadyGone, inspectErr := validatePersistedSinglePath(connector.DevicePath, expectedWWID)
+		if inspectErr != nil {
+			return status.Errorf(codes.Aborted, "cannot validate persisted iSCSI connector state: %v", inspectErr)
+		}
+		if alreadyGone {
+			if removeErr := os.Remove(iscsi.connectorInfoPath); removeErr != nil && !os.IsNotExist(removeErr) {
+				return status.Errorf(codes.Internal, "remove stale iSCSI connector: %v", removeErr)
+			}
+			klog.InfoS("persisted single-path iSCSI connector reconciled: device no longer exists",
+				"device", connector.DevicePath, "wwid", expectedWWID)
 			return nil
 		}
-		return status.Error(codes.Internal, err.Error())
 	}
 	klog.InfoS("connector.DevicePath", "connector.DevicePath", connector.DevicePath)
 
@@ -203,7 +298,6 @@ func (iscsi *iscsiStorage) DetachStorage(ctx context.Context, req *csi.NodeUnpub
 		}
 	}
 
-	wwn, _ := common.VolumeIdGetWwn(req.GetVolumeId())
 	out, err := exec.Command("ls", "-l", fmt.Sprintf("/dev/disk/by-id/dm-name-3%s", wwn)).CombinedOutput()
 	klog.Infof("check for dm-name: ls -l %s, err = %v, out = \n%s", fmt.Sprintf("/dev/disk/by-id/dm-name-3%s", wwn), err, string(out))
 
@@ -237,6 +331,7 @@ func (iscsi *iscsiStorage) NodeGetVolumeStats(ctx context.Context, req *csi.Node
 func (iscsi *iscsiStorage) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolumeRequest) (*csi.NodeExpandVolumeResponse, error) {
 
 	volumeName, _ := common.VolumeIdGetName(req.GetVolumeId())
+	wwn, wwnErr := common.VolumeIdGetWwn(req.GetVolumeId())
 	volumepath := req.GetVolumePath()
 	klog.V(2).Infof("NodeExpandVolume: VolumeId=%v,  VolumePath=%v", volumeName, volumepath)
 
@@ -246,6 +341,9 @@ func (iscsi *iscsiStorage) NodeExpandVolume(ctx context.Context, req *csi.NodeEx
 
 	if len(volumepath) == 0 {
 		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("node expand volume requires volume path"))
+	}
+	if wwnErr != nil {
+		return nil, status.Error(codes.InvalidArgument, wwnErr.Error())
 	}
 
 	connector, err := iscsilib.GetConnectorFromFile(iscsi.connectorInfoPath)
@@ -257,9 +355,16 @@ func (iscsi *iscsiStorage) NodeExpandVolume(ctx context.Context, req *csi.NodeEx
 
 	if connector.Multipath {
 		klog.V(2).Info("device is using multipath")
-		if err := iscsilib.ResizeMultipathDevice(connector.DevicePath); err != nil {
-			return nil, err
+		inspection, resizeErr := rescanAndResizeISCSIMultipath(wwn)
+		if resizeErr != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "iSCSI expansion validation failed: %v", resizeErr)
 		}
+		connector.DevicePath = inspection.Device
+		klog.InfoS("rescanned and validated expanded iSCSI multipath device",
+			"device", inspection.Device,
+			"wwid", inspection.WWID,
+			"paths", len(inspection.SlaveNames),
+			"capacityBytes", inspection.Capacity)
 	} else {
 		klog.V(2).Info("device is NOT using multipath")
 	}
