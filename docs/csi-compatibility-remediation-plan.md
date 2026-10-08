@@ -1,6 +1,6 @@
 # CSI compatibility and recovery remediation plan
 
-## Disposition against the qualified CANES-FAK release scope (2026-10-07)
+## Disposition against the tested iSCSI release scope (2026-10-07)
 
 This is a status review of the **numbered plan below**, not a claim that every
 proposed remediation was implemented. The intended first release is a fresh
@@ -14,15 +14,15 @@ release gate below are retained as review history, not as a record of work
 completed or a substitute for explicit risk acceptance.
 
 The valid iSCSI WWID/capacity, LUN-reuse, reboot, initiator-registration, and
-cross-array serialization fixes have substantial unit and live evidence in
-[CANES CSI bug tickets](../../canes/docs/troubleshooting/csi-bug-tickets.md).
+cross-array serialization fixes have substantial unit and live evidence from
+the three-node PowerVault qualification lab.
 Five forced single-node reboot cycles, fresh-cluster rolling and simultaneous
 reboots, disposable attach/detach, a supervised lost-node/OSD replacement,
 and a three-node OS upgrade with unchanged PostgreSQL data all passed within
 their documented boundaries. That evidence does **not** cover the acceptance
 gates marked deferred below. In particular, the live controller used a
 one-off image from `964662e` while the ISO-pinned node image was `49b57cf`;
-a final unified, immutable release image/ISO has not been qualified.
+the subsequently built unified prerelease image/ISO has not been live-qualified.
 
 | Plan item | Disposition for this release |
 | --- | --- |
@@ -37,9 +37,9 @@ a final unified, immutable release image/ISO has not been qualified.
 | 9. Same-node multi-pod provenance | Deferred |
 | 10. Partial iSCSI attach failure | Deferred |
 | Separate FC/SAS race | Disregarded for iSCSI-only deployment |
-| Full release gate below | Deferred; final unified image/ISO still pending |
+| Full release gate below | Deferred; unified image/ISO live qualification pending |
 
-This plan covers the findings from the review of `canes-csi-fixes` against
+This plan covers the findings from the review of the current fix branch against
 `v1.10.0`, including commit `964662e` (controller serialization). The chart's
 temporary image repository and tag are intentionally outside this plan because
 the consuming project supplies its own image values.
@@ -81,7 +81,7 @@ VolumeAttachment recovery was tested first on a disposable PVC and then on
 retained Rook OSDs on a newly imaged node; the runbook now supports
 array-first IQN identification and an all-array retired-IQN closure audit.
 That is the qualified fallback, not automatic dead-node recovery. See the
-[permanent-node-loss runbook](../../canes/docs/troubleshooting/seagate-csi-permanent-node-loss.md).
+supervised permanent-node-loss procedure maintained by the deployment team.
 
 **Problem.** `pkg/controller/publisher.go` always queries `node_id` as a live
 node address. CSI requires an empty `node_id` to unpublish the volume from all
@@ -196,8 +196,8 @@ implemented. Its exact-WWID and mounted/open guards and the reboot cleanup
 path were exercised on disposable iSCSI volumes, including late discovery,
 but those tests do not authenticate the caller or prove safe cleanup for all
 future rediscovery. The current callback risk remains an explicit release
-decision; FC/SAS-specific work in this item is disregarded for the iSCSI-only
-CANES-FAK deployment, not fixed upstream. The guarded host recovery helper
+decision; FC/SAS-specific work in this item is disregarded for the tested
+iSCSI-only deployment, not fixed upstream. The guarded host recovery helper
 remains the supervised fallback for a proven unused stale map.
 
 **Problem.** `pkg/node_service/node_service_server.go` accepts an unauthenticated
@@ -372,7 +372,7 @@ data. Successful responses report the array's actual capacity and true source.
 
 **Disposition: DEFERRED.** `findSCSIPathsByWWID` still scans all `sd*` block
 devices and treats unreadable identities as an error. Exact-WWID missing-state
-recovery and reboot tests passed on the CANES-FAK hosts, but a mixed host with
+recovery and reboot tests passed on the tested hosts, but a mixed host with
 an unrelated unreadable non-iSCSI disk was not tested. The current scan can
 therefore still block recovery on such a host; it does not justify unsafe
 cleanup or a success response.
@@ -406,7 +406,7 @@ truly absent.
 
 ## 5. Host utility prerequisites
 
-**Disposition: DEFERRED.** The tested CANES-FAK image had the utilities needed
+**Disposition: DEFERRED.** The tested host image had the utilities needed
 for its iSCSI attach/expand paths, as shown by live provisioning and growth
 tests. The driver's `requiredBinaries` list still comments out `blockdev` and
 `scsi_id`, omits `sg_readcap`/`udevadm` from an enforced readiness contract,
@@ -525,8 +525,9 @@ Helm resource ordering.
 ## 7. TLS compatibility and optional CA migration
 
 **Disposition: DEFERRED as a full plan item; current deployment mode DONE.**
-CANES explicitly renders `controller.tls.insecureSkipVerify: true`, and the
-fresh installation, primary/backup array provisioning, detach, reboot, and OS
+The tested deployment explicitly renders
+`controller.tls.insecureSkipVerify: true`, and the fresh installation,
+primary/backup array provisioning, detach, reboot, and OS
 upgrade tests succeeded with that setting. Verification-on remains the chart
 default. No CA migration was requested for this release, so that optional
 part is disregarded for the current deployment. Malformed-CA precedence,
@@ -735,7 +736,7 @@ be silently reported as a successful attach or cleaned by broad logout.
 
 ## Separate pre-existing FC/SAS map concurrency fix
 
-**Disposition: DISREGARDED for the CANES-FAK iSCSI-only release; still open
+**Disposition: DISREGARDED for the tested iSCSI-only release; still open
 upstream.** This map race was not fixed or tested. Do not claim FC/SAS support
 has been qualified by the PowerVault iSCSI lab work. Reopen before FC/SAS use.
 
@@ -752,9 +753,9 @@ the node plugin cannot panic from concurrent map iteration and writes.
 
 **Disposition: DEFERRED.** The blanket multi-protocol/mixed-version gate below
 is broader than the chosen fresh-install iSCSI release and is not met. The
-scoped iSCSI lab gates passed where documented in CANES, but a final immutable
-image containing `964662e` for both controller and nodes, pinned into a new
-ISO and smoke-tested as that exact artifact, remains unqualified. Clone,
+scoped iSCSI lab gates passed in the external qualification record, but the
+unified prerelease image containing `964662e` for both controller and nodes,
+pinned into a new ISO, remains unqualified on a live cluster. Clone,
 mixed-host SCSI scan, partial-publish failure, same-node mount provenance,
 host-tool readiness, and unauthenticated callback risks above remain explicit
 deferrals; a release decision must accept or remediate them rather than

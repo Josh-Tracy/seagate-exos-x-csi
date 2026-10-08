@@ -21,7 +21,7 @@ done
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 work_dir=$(mktemp -d)
-remote_binary=/tmp/canes-csi-capacity-limit
+remote_binary=/tmp/exos-x-csi-capacity-limit
 controller_pod=
 
 cleanup() {
@@ -56,7 +56,7 @@ fi
 controller_pod=${controller_pods[0]}
 
 if [[ -z "$client_binary" ]]; then
-    client_binary=$work_dir/canes-csi-capacity-limit
+    client_binary=$work_dir/exos-x-csi-capacity-limit
     CGO_ENABLED=0 "$go_bin" build -trimpath \
         -o "$client_binary" \
         "$repo_root/test/live/capacity-limit"

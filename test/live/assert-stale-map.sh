@@ -9,7 +9,7 @@ fi
 wwid=$1
 cached_bytes=$2
 direct_bytes=$3
-helper=${HELPER:-/usr/bin/canes-recover-stale-multipath}
+helper=${HELPER:-}
 expected_paths=${EXPECTED_PATHS:-8}
 
 [[ $wwid =~ ^[[:xdigit:]]+$ ]] || {
@@ -24,8 +24,8 @@ expected_paths=${EXPECTED_PATHS:-8}
     echo "ERROR: DIRECT_BYTES must be greater than CACHED_BYTES" >&2
     exit 2
 }
-[[ -x $helper ]] || {
-    echo "ERROR: helper is not executable: $helper" >&2
+[[ -n $helper && -x $helper ]] || {
+    echo "ERROR: set HELPER to an executable stale-multipath recovery helper" >&2
     exit 1
 }
 

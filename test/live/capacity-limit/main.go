@@ -33,7 +33,7 @@ func main() {
 	flag.StringVar(&pool, "pool", "", "PowerVault pool")
 	flag.StringVar(&protocol, "protocol", "iscsi", "storage protocol")
 	flag.StringVar(&volumePrefix, "volume-prefix", "csi", "driver volume prefix")
-	flag.StringVar(&namePrefix, "name-prefix", "canes-capacity-qualification", "unique test name prefix")
+	flag.StringVar(&namePrefix, "name-prefix", "exos-capacity-qualification", "unique test name prefix")
 	flag.Parse()
 
 	if pool == "" {

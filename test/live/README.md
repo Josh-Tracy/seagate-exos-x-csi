@@ -32,7 +32,7 @@ STORAGE_CLASS=powervault-sc-a \
 ```
 
 On an administration host without Go, build the client elsewhere and provide
-its path with `CLIENT_BINARY=/path/to/canes-csi-capacity-limit`.
+its path with `CLIENT_BINARY=/path/to/exos-x-csi-capacity-limit`.
 
 The controller Deployment and Secret may use a different namespace. The
 StorageClass's provisioner-secret namespace is honored automatically; use
@@ -46,13 +46,15 @@ created, run this read-only assertion on the affected node before attempting
 candidate attach or helper repair:
 
 ```bash
-sudo ./test/live/assert-stale-map.sh \
+sudo HELPER=/path/to/recover-stale-multipath \
+  ./test/live/assert-stale-map.sh \
   3600c0ff000000000000000000000000 \
   1073741824 \
   2147483648
 ```
 
-It requires `GROWTH_NEEDED`, an unused map, eight paths by default, one exact
+Set `HELPER` to the installed recovery helper on the test host. The assertion
+requires `GROWTH_NEEDED`, an unused map, eight paths by default, one exact
 WWID, and exact cached/direct byte counts. Set `EXPECTED_PATHS` only when the
 test topology intentionally has a different path count. The output includes
 the helper SHA-256 but never reads connector JSON.
